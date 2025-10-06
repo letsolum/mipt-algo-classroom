@@ -79,7 +79,7 @@ jobs:
           fi
           echo "./$REF/main.cpp" > target_cpp.txt
 
-      - name: clang-format (fail on diff + print diff)
+            - name: clang-format (fail on diff + print diff)
         id: format_check
         shell: bash
         continue-on-error: true
@@ -90,27 +90,31 @@ jobs:
           else
             style_opt="-style='{BasedOnStyle: Google, DerivePointerAlignment: false, PointerAlignment: Left, AlignOperands: true}'"
           fi
-          "$CLANG_FORMAT" ${style_opt} -i "$target"
-          if ! git diff --quiet --exit-code -- "$target"; then
-            echo "Форматирование изменило файл: $target"
-            git diff -- "$target" > clang-format.patch
 
-            # Показать diff прямо в логах (урезаем, если огромный)
+          "$CLANG_FORMAT" ${style_opt} -i "$target"
+
+          # ВАЖНО: git diff -> код 1 при отличиях. Собираем diff в файлы, не давая шагу оборваться.
+          set +e
+          git --no-pager diff --unified=0 -- "$target" | tee cf.diff > /dev/null
+          rc=${PIPESTATUS[0]}   # код git diff
+          git --no-pager diff -- "$target" > clang-format.patch
+          set -e
+
+          if [ "$rc" -ne 0 ]; then
+            echo "Форматирование изменило файл: $target"
             echo "::group::clang-format diff"
-            git --no-pager diff --unified=0 -- "$target" > cf.diff
             LINES=$(wc -l < cf.diff)
             if [ "$LINES" -le 2000 ]; then
               cat cf.diff
             else
-              echo "(diff длиннее 2000 строк; печатаю начало и конец)"
               head -n 1000 cf.diff
               echo "----- [truncated] -----"
               tail -n 1000 cf.diff
             fi
             echo "::endgroup::"
-
             exit 1
           fi
+
 
       - name: Upload clang-format patch
         if: ${{ steps.format_check.outcome == 'failure' }}
