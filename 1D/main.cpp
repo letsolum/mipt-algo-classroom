@@ -1,5 +1,9 @@
 #include <iostream>
 
-int main(){
+int main() {
     std::cout << "base";
+    int n;
+    std::cin >> n;
+    int a;
+    std::cin >> a;
 }
