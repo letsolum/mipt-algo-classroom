@@ -79,7 +79,7 @@ jobs:
           fi
           echo "./$REF/main.cpp" > target_cpp.txt
 
-            - name: clang-format (fail on diff + print diff)
+      - name: clang-format (fail on diff + print diff)
         id: format_check
         shell: bash
         continue-on-error: true
