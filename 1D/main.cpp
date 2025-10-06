@@ -4,6 +4,6 @@ int main() {
   std::cout << "base";
   int n;
   std::cin >> n;
-  int a;
-  std::cin >> a;
+  int aa;
+  std::cin >> aa;
 }
