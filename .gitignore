@@ -1,0 +1,13 @@
+# C++/build
+build/
+cmake-build-*/
+*.o
+*.obj
+*.out
+*.exe
+*.log
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/

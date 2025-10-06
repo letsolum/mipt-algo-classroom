@@ -1,0 +1,116 @@
+name: C++ style & tidy
+
+on:
+  push:
+    branches-ignore:
+      - 'main'
+    paths:
+      - '**/*.cpp'
+      - '.clang-tidy'
+      - '.clang-format'
+      - '.github/workflows/cpp-style.yml'
+  pull_request:
+    branches:
+      - 'main'
+    paths:
+      - '**/*.cpp'
+      - '.clang-tidy'
+      - '.clang-format'
+      - '.github/workflows/cpp-style.yml'
+
+jobs:
+  style-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine branch name
+        id: ref
+        run: |
+          REF="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+          echo "ref_name=$REF" >> $GITHUB_OUTPUT
+          echo "Branch/PR head: $REF"
+
+      - name: Enforce branch naming (<number><letter>)
+        run: |
+          REF="${{ steps.ref.outputs.ref_name }}"
+          if ! [[ "$REF" =~ ^[0-9]+[A-Za-z]$ ]]; then
+            echo "::error::Ветка должна называться <число><буква>, например: 1A, 12b. Сейчас: $REF"
+            exit 1
+          fi
+
+      - name: Install clang tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format clang-tidy
+
+      - name: Verify task structure and target file
+        id: collect
+        shell: bash
+        run: |
+          set -e
+          REF="${{ steps.ref.outputs.ref_name }}"
+          # Папка должна совпадать с именем ветки
+          if [ ! -d "./$REF" ]; then
+            echo "::error::Ожидается папка './$REF/'."
+            exit 1
+          fi
+          # Единственный разрешённый исходник — ./<ветка>/main.cpp
+          if [ ! -f "./$REF/main.cpp" ]; then
+            echo "::error::Не найден файл './$REF/main.cpp'."
+            exit 1
+          fi
+          # Запрещаем любые другие .cpp в репозитории
+          mapfile -d '' others < <(find . -type f -name '*.cpp' -not -path "./$REF/main.cpp" -print0)
+          if [ ${#others[@]} -ne 0 ]; then
+            echo "::error::В репозитории найден(ы) лишний(е) .cpp файл(ы), кроме './$REF/main.cpp':"
+            printf '%s\n' "${others[@]}"
+            exit 1
+          fi
+          echo "./$REF/main.cpp" > target_cpp.txt
+          echo "target=./$REF/main.cpp" >> $GITHUB_OUTPUT
+
+      - name: clang-format (fail on diff)
+        id: format_check
+        shell: bash
+        continue-on-error: true
+        run: |
+          target="$(cat target_cpp.txt)"
+          if [ -f .clang-format ]; then
+            style_opt=""
+          else
+            style_opt="-style='{BasedOnStyle: Google, DerivePointerAlignment: false, PointerAlignment: Left, AlignOperands: true}'"
+          fi
+          clang-format ${style_opt} -i "$target"
+          if ! git diff --quiet --exit-code; then
+            echo "Форматирование изменило файл:"
+            git diff --name-only
+            git diff > clang-format.patch
+            exit 1
+          fi
+
+      - name: Upload clang-format patch
+        if: ${{ steps.format_check.outcome == 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: clang-format.patch
+          path: clang-format.patch
+
+      - name: clang-tidy (WarningsAsErrors)
+        id: tidy_check
+        shell: bash
+        continue-on-error: true
+        run: |
+          target="$(cat target_cpp.txt)"
+          # Используем .clang-tidy из корня; при отсутствии базы компиляции задаём стандарт C++20
+          if ! clang-tidy -quiet -extra-arg=-std=c++20 "$target" --; then
+            echo "::error::clang-tidy нашёл замечания (считаются ошибками)."
+            exit 1
+          fi
+
+      - name: Fail if any check failed
+        if: ${{ steps.format_check.outcome == 'failure' || steps.tidy_check.outcome == 'failure' }}
+        run: exit 1
