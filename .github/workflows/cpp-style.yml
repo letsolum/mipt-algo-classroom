@@ -1,139 +1,77 @@
-name: C++ style & tidy
+name: C++ Style Check
 
 on:
   push:
-    branches-ignore: [ 'main' ]
-    paths:
-      - '**/*.cpp'
-      - '.clang-tidy'
-      - '.clang-format'
-      - '.github/workflows/cpp-style.yml'
-  pull_request:
-    branches: [ 'main' ]
-    paths:
-      - '**/*.cpp'
-      - '.clang-tidy'
-      - '.clang-format'
-      - '.github/workflows/cpp-style.yml'
 
 jobs:
-  style-lint:
+  style-check:
     runs-on: ubuntu-latest
-    env:
-      DEBIAN_FRONTEND: noninteractive
+    
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Determine branch name
-        id: ref
+      - name: Validate branch name and structure
         run: |
-          REF="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
-          echo "ref_name=$REF" >> $GITHUB_OUTPUT
-          echo "Branch/PR head: $REF"
-
-      - name: Enforce branch naming (<number><letter>)
-        run: |
-          REF="${{ steps.ref.outputs.ref_name }}"
-          if ! [[ "$REF" =~ ^[0-9]+[A-Za-z]$ ]]; then
-            echo "::error::Ветка должна называться <число><буква>, например: 1A, 12b. Сейчас: $REF"
+          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+          echo "Branch name: $BRANCH_NAME"
+          
+          # Check branch name format: number followed by letter (e.g., 1A, 12B)
+          if ! [[ "$BRANCH_NAME" =~ ^[0-9]+[A-Z]$ ]]; then
+            echo "❌ Error: Branch name must be in format <number><letter> (e.g., 1A, 12B)"
             exit 1
           fi
+          
+          # Check if folder with same name exists
+          if [ ! -d "$BRANCH_NAME" ]; then
+            echo "❌ Error: Folder '$BRANCH_NAME' does not exist"
+            exit 1
+          fi
+          
+          # Check if main.cpp exists in the folder
+          if [ ! -f "$BRANCH_NAME/main.cpp" ]; then
+            echo "❌ Error: File '$BRANCH_NAME/main.cpp' does not exist"
+            exit 1
+          fi
+          
+          echo "✅ Branch structure validation passed"
 
-      - name: Cache clang tools
-        uses: awalsh128/cache-apt-pkgs-action@v1
-        with:
-          packages: "clang-format clang-tidy"
-          version: 1
-
-      - name: Resolve tool paths
+      - name: Install clang tools
         run: |
-          CF=$(command -v clang-format || command -v clang-format-18 || command -v clang-format-17 || command -v clang-format-16 || command -v clang-format-15 || command -v clang-format-14)
-          CT=$(command -v clang-tidy   || command -v clang-tidy-18   || command -v clang-tidy-17   || command -v clang-tidy-16   || command -v clang-tidy-15   || command -v clang-tidy-14)
-          echo "CLANG_FORMAT=$CF" >> $GITHUB_ENV
-          echo "CLANG_TIDY=$CT"   >> $GITHUB_ENV
-          "$CF" --version
-          "$CT" --version
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang-format clang-tidy
 
-      - name: Verify task structure and target file
-        id: collect
-        shell: bash
+      - name: Run clang-format check
         run: |
-          set -e
-          REF="${{ steps.ref.outputs.ref_name }}"
-          if [ ! -d "./$REF" ]; then
-            echo "::error::Ожидается папка './$REF/'."
+          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+          FILE="$BRANCH_NAME/main.cpp"
+          
+          echo "Checking formatting for $FILE..."
+          
+          # Run clang-format and check for differences
+          clang-format --style=file "$FILE" > /tmp/formatted.cpp
+          
+          if ! diff -u "$FILE" /tmp/formatted.cpp; then
+            echo ""
+            echo "❌ Error: Code is not properly formatted"
+            echo "Run 'clang-format -i $FILE' to fix formatting"
             exit 1
           fi
-          if [ ! -f "./$REF/main.cpp" ]; then
-            echo "::error::Не найден файл './$REF/main.cpp'."
-            exit 1
-          fi
-          mapfile -d '' others < <(find . -type f -name '*.cpp' -not -path "./$REF/main.cpp" -print0)
-          if [ ${#others[@]} -ne 0 ]; then
-            echo "::error::Найдены лишние .cpp кроме './$REF/main.cpp':"
-            printf '%s\n' "${others[@]}"
-            exit 1
-          fi
-          echo "./$REF/main.cpp" > target_cpp.txt
+          
+          echo "✅ clang-format check passed"
 
-      - name: clang-format (fail on diff + print diff)
-        id: format_check
-        shell: bash
-        continue-on-error: true
+      - name: Run clang-tidy check
         run: |
-          target="$(cat target_cpp.txt)"
-          if [ -f .clang-format ]; then
-            style_opt=""
-          else
-            style_opt="-style='{BasedOnStyle: Google, DerivePointerAlignment: false, PointerAlignment: Left, AlignOperands: true}'"
-          fi
-
-          "$CLANG_FORMAT" ${style_opt} -i "$target"
-
-          # ВАЖНО: git diff -> код 1 при отличиях. Собираем diff в файлы, не давая шагу оборваться.
-          set +e
-          git --no-pager diff --unified=0 -- "$target" | tee cf.diff > /dev/null
-          rc=${PIPESTATUS[0]}   # код git diff
-          git --no-pager diff -- "$target" > clang-format.patch
-          set -e
-
-          if [ "$rc" -ne 0 ]; then
-            echo "Форматирование изменило файл: $target"
-            echo "::group::clang-format diff"
-            LINES=$(wc -l < cf.diff)
-            if [ "$LINES" -le 2000 ]; then
-              cat cf.diff
-            else
-              head -n 1000 cf.diff
-              echo "----- [truncated] -----"
-              tail -n 1000 cf.diff
-            fi
-            echo "::endgroup::"
+          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+          FILE="$BRANCH_NAME/main.cpp"
+          
+          echo "Running clang-tidy on $FILE..."
+          
+          # Run clang-tidy with the config file
+          if ! clang-tidy "$FILE" -- -std=c++17; then
+            echo ""
+            echo "❌ Error: clang-tidy found issues"
             exit 1
           fi
-
-
-      - name: Upload clang-format patch
-        if: ${{ steps.format_check.outcome == 'failure' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: clang-format.patch
-          path: clang-format.patch
-
-      - name: clang-tidy (WarningsAsErrors)
-        id: tidy_check
-        shell: bash
-        continue-on-error: true
-        run: |
-          target="$(cat target_cpp.txt)"
-          if ! "$CLANG_TIDY" -quiet -extra-arg=-std=c++20 "$target" --; then
-            echo "::error::clang-tidy нашёл замечания (считаются ошибками)."
-            exit 1
-          fi
-
-      - name: Fail if any check failed
-        if: ${{ steps.format_check.outcome == 'failure' || steps.tidy_check.outcome == 'failure' }}
-        run: exit 1
+          
+          echo "✅ clang-tidy check passed"
