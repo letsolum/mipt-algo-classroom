@@ -2,16 +2,14 @@ name: C++ style & tidy
 
 on:
   push:
-    branches-ignore:
-      - 'main'
+    branches-ignore: [ 'main' ]
     paths:
       - '**/*.cpp'
       - '.clang-tidy'
       - '.clang-format'
       - '.github/workflows/cpp-style.yml'
   pull_request:
-    branches:
-      - 'main'
+    branches: [ 'main' ]
     paths:
       - '**/*.cpp'
       - '.clang-tidy'
@@ -21,6 +19,8 @@ on:
 jobs:
   style-lint:
     runs-on: ubuntu-latest
+    env:
+      DEBIAN_FRONTEND: noninteractive
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -42,10 +42,20 @@ jobs:
             exit 1
           fi
 
-      - name: Install clang tools
+      - name: Cache clang tools
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: "clang-format clang-tidy"
+          version: 1
+
+      - name: Resolve tool paths
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-format clang-tidy
+          CF=$(command -v clang-format || command -v clang-format-18 || command -v clang-format-17 || command -v clang-format-16 || command -v clang-format-15 || command -v clang-format-14)
+          CT=$(command -v clang-tidy   || command -v clang-tidy-18   || command -v clang-tidy-17   || command -v clang-tidy-16   || command -v clang-tidy-15   || command -v clang-tidy-14)
+          echo "CLANG_FORMAT=$CF" >> $GITHUB_ENV
+          echo "CLANG_TIDY=$CT"   >> $GITHUB_ENV
+          "$CF" --version
+          "$CT" --version
 
       - name: Verify task structure and target file
         id: collect
@@ -53,27 +63,23 @@ jobs:
         run: |
           set -e
           REF="${{ steps.ref.outputs.ref_name }}"
-          # Папка должна совпадать с именем ветки
           if [ ! -d "./$REF" ]; then
             echo "::error::Ожидается папка './$REF/'."
             exit 1
           fi
-          # Единственный разрешённый исходник — ./<ветка>/main.cpp
           if [ ! -f "./$REF/main.cpp" ]; then
             echo "::error::Не найден файл './$REF/main.cpp'."
             exit 1
           fi
-          # Запрещаем любые другие .cpp в репозитории
           mapfile -d '' others < <(find . -type f -name '*.cpp' -not -path "./$REF/main.cpp" -print0)
           if [ ${#others[@]} -ne 0 ]; then
-            echo "::error::В репозитории найден(ы) лишний(е) .cpp файл(ы), кроме './$REF/main.cpp':"
+            echo "::error::Найдены лишние .cpp кроме './$REF/main.cpp':"
             printf '%s\n' "${others[@]}"
             exit 1
           fi
           echo "./$REF/main.cpp" > target_cpp.txt
-          echo "target=./$REF/main.cpp" >> $GITHUB_OUTPUT
 
-      - name: clang-format (fail on diff)
+      - name: clang-format (fail on diff + print diff)
         id: format_check
         shell: bash
         continue-on-error: true
@@ -84,11 +90,25 @@ jobs:
           else
             style_opt="-style='{BasedOnStyle: Google, DerivePointerAlignment: false, PointerAlignment: Left, AlignOperands: true}'"
           fi
-          clang-format ${style_opt} -i "$target"
-          if ! git diff --quiet --exit-code; then
-            echo "Форматирование изменило файл:"
-            git diff --name-only
-            git diff > clang-format.patch
+          "$CLANG_FORMAT" ${style_opt} -i "$target"
+          if ! git diff --quiet --exit-code -- "$target"; then
+            echo "Форматирование изменило файл: $target"
+            git diff -- "$target" > clang-format.patch
+
+            # Показать diff прямо в логах (урезаем, если огромный)
+            echo "::group::clang-format diff"
+            git --no-pager diff --unified=0 -- "$target" > cf.diff
+            LINES=$(wc -l < cf.diff)
+            if [ "$LINES" -le 2000 ]; then
+              cat cf.diff
+            else
+              echo "(diff длиннее 2000 строк; печатаю начало и конец)"
+              head -n 1000 cf.diff
+              echo "----- [truncated] -----"
+              tail -n 1000 cf.diff
+            fi
+            echo "::endgroup::"
+
             exit 1
           fi
 
@@ -105,8 +125,7 @@ jobs:
         continue-on-error: true
         run: |
           target="$(cat target_cpp.txt)"
-          # Используем .clang-tidy из корня; при отсутствии базы компиляции задаём стандарт C++20
-          if ! clang-tidy -quiet -extra-arg=-std=c++20 "$target" --; then
+          if ! "$CLANG_TIDY" -quiet -extra-arg=-std=c++20 "$target" --; then
             echo "::error::clang-tidy нашёл замечания (считаются ошибками)."
             exit 1
           fi
