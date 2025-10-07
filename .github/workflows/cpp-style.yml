@@ -1,8 +1,9 @@
 name: C++ Style Check
 
 on:
-  push:
-
+    branches-ignore:
+      - main
+      - 'main*'
 jobs:
   style-check:
     runs-on: ubuntu-latest
